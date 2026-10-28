@@ -1,0 +1,1407 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#141518">
+<title>fog · กระจกฝ้า</title>
+<!-- Pinned on purpose: unpinned versions pull a broken build. camera_utils is deliberately NOT loaded. -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --font: "Sukhumvit Set", "Noto Sans Thai", "Leelawadee UI", Thonburi, ui-sans-serif, system-ui, -apple-system, Tahoma, sans-serif;
+    --sat: env(safe-area-inset-top, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+  }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #0d0e10; color: #f4f1ec;
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button { -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  /* Kept in the DOM and "visible" so every browser keeps decoding frames, but out of sight. */
+  #cam { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  /* ---------- start screen ---------- */
+  #start {
+    position: fixed; inset: 0; display: grid; place-items: center; z-index: 10;
+    background:
+      radial-gradient(ellipse 60% 45% at 50% 42%, rgba(255,255,255,.10), transparent 70%),
+      radial-gradient(ellipse at 50% 40%, #33363b 0%, #141518 72%);
+    overflow-y: auto;
+  }
+  #start[hidden] { display: none; }
+  .card { text-align: center; max-width: 440px; padding: calc(24px + var(--sat)) 16px calc(24px + var(--sab)); }
+  h1 {
+    margin: 0; font-weight: 200; letter-spacing: -0.02em; line-height: 1.1;
+    font-size: clamp(64px, 16vw, 124px);
+    color: rgba(255,255,255,.86);
+    text-shadow: 0 0 28px rgba(255,255,255,.35), 0 0 2px rgba(255,255,255,.6);
+    filter: blur(.5px);
+  }
+  .tag { margin: .9em 0 2.2em; opacity: .75; font-size: 16px; line-height: 1.6; }
+  #go {
+    font: inherit; font-size: 17px; letter-spacing: .02em;
+    color: #fff; cursor: pointer;
+    padding: 14px 40px; border-radius: 999px;
+    background: rgba(255,255,255,.14);
+    border: 1px solid rgba(255,255,255,.38);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 0 24px rgba(255,255,255,.08);
+    transition: background .2s, transform .2s;
+  }
+  #go:hover { background: rgba(255,255,255,.22); }
+  #go:active { transform: scale(.97); }
+  #go:disabled { opacity: .5; cursor: default; }
+  .privacy { margin-top: 1.8em; font-size: 13px; line-height: 1.65; opacity: .62; }
+  #msg { margin-top: 1.4em; font-size: 14px; line-height: 1.65; color: #ffc2b6; min-height: 1em; -webkit-user-select: text; user-select: text; }
+  #msg code { background: rgba(255,255,255,.1); padding: 1px 6px; border-radius: 4px; color: #fff; word-break: break-all; }
+  .keys { margin-top: 1.6em; font-size: 12px; line-height: 1.9; opacity: .45; }
+
+  /* ---------- in-mirror HUD ---------- */
+  #hud[hidden] { display: none; }
+  .frosted {
+    background: rgba(255,255,255,.12);
+    border: 1px solid rgba(255,255,255,.34);
+    backdrop-filter: blur(14px) saturate(1.15); -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  }
+  #brushPill {
+    position: fixed; left: calc(16px + var(--sal)); bottom: calc(16px + var(--sab)); z-index: 5;
+    display: flex; align-items: center; gap: 12px;
+    padding: 9px 18px 9px 16px; border-radius: 999px;
+    color: #fff; font-size: 13px; letter-spacing: .05em;
+  }
+  #brushPill label { text-transform: lowercase; opacity: .9; }
+  #brush {
+    -webkit-appearance: none; appearance: none; margin: 0;
+    width: 132px; height: 18px; background: transparent; accent-color: #fff; cursor: pointer;
+  }
+  #brush:focus { outline: none; }
+  #brush::-webkit-slider-runnable-track { height: 2px; border-radius: 2px; background: rgba(255,255,255,.6); }
+  #brush::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; margin-top: -6px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.85);
+  }
+  #brush::-moz-range-track { height: 2px; border-radius: 2px; background: rgba(255,255,255,.6); }
+  #brush::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.85); }
+
+  #shutter {
+    position: fixed; right: calc(16px + var(--sar)); bottom: calc(16px + var(--sab)); z-index: 5;
+    width: 60px; height: 60px; border-radius: 50%; padding: 0; cursor: pointer;
+    display: grid; place-items: center;
+  }
+  #shutter::after {
+    content: ""; width: 42px; height: 42px; border-radius: 50%;
+    background: rgba(255,255,255,.92); box-shadow: 0 0 14px rgba(255,255,255,.55);
+    transition: transform .12s;
+  }
+  #shutter:active::after { transform: scale(.86); }
+
+  #puff {
+    position: fixed; right: calc(20px + var(--sar)); bottom: calc(16px + 60px + 14px + var(--sab)); z-index: 5;
+    width: 52px; height: 52px; border-radius: 50%; padding: 0; cursor: pointer;
+    display: grid; place-items: center; font-size: 22px; color: #fff; touch-action: none;
+    transition: background .15s, transform .15s;
+  }
+  #puff[hidden] { display: none; }
+  #puff.on { background: rgba(255,255,255,.32); transform: scale(.94); }
+
+  #hint {
+    position: fixed; top: calc(18px + var(--sat)); left: 50%; transform: translateX(-50%); z-index: 5;
+    width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box; text-align: center;
+    padding: 8px 18px; border-radius: 999px; font-size: 14px; line-height: 1.5; color: #fff;
+    transition: opacity 1.2s; pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 13; }
+  #flash.on { animation: flash .5s ease-out; }
+  @keyframes flash { from { opacity: .8; } to { opacity: 0; } }
+
+  /* ---------- polaroid ---------- */
+  #polaroid {
+    position: fixed; inset: 0; z-index: 12;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+    padding: calc(16px + var(--sat)) 16px calc(16px + var(--sab)); box-sizing: border-box;
+    background: rgba(12,8,12,.38);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  #polaroid[hidden] { display: none; }
+  #polImg {
+    width: min(80vw, calc(64vh * 1080 / 1300)); height: auto; display: block;
+    border-radius: 3px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    transform: rotate(-2.5deg);
+    animation: pop .8s cubic-bezier(.2,.9,.3,1.25) both;
+  }
+  @supports (height: 1dvh) { #polImg { width: min(80vw, calc(64dvh * 1080 / 1300)); } }
+  @keyframes pop {
+    from { transform: translateY(40px) rotate(-9deg) scale(.82); opacity: 0; }
+    to   { transform: rotate(-2.5deg); opacity: 1; }
+  }
+  .pol-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .pol-actions button {
+    font: inherit; font-size: 16px; color: #fff; cursor: pointer;
+    padding: 12px 24px; border-radius: 999px;
+  }
+
+  #err {
+    position: fixed; left: 16px; top: calc(16px + var(--sat)); right: 16px; z-index: 20;
+    padding: 10px 14px; border-radius: 10px; font: 12px/1.45 ui-monospace, Menlo, monospace;
+    background: rgba(120,20,20,.88); color: #fff; white-space: pre-wrap; cursor: pointer;
+  }
+  #err[hidden] { display: none; }
+
+  @media (max-width: 480px) {
+    #brush { width: 96px; }
+  }
+  @media (pointer: coarse) {
+    #brush { height: 30px; }
+    #brush::-webkit-slider-thumb { width: 22px; height: 22px; margin-top: -10px; }
+    #brush::-moz-range-thumb { width: 22px; height: 22px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<video id="cam" playsinline muted autoplay></video>
+
+<div id="start">
+  <div class="card">
+    <h1>fog</h1>
+    <p class="tag">กระจกห้องน้ำขึ้นฝ้าแล้ว 🫧<br>breathe ฟู่ๆ ให้ฝ้าขึ้น · pinch นิ้ววาดรูป · fist ปาดเช็ด</p>
+    <button id="go">start เลย ✨</button>
+    <p class="privacy">🔒 100% on-device ภาพ เสียง ข้อมูล ไม่ออกจากเครื่องนี้<br>no upload, no record สบายใจได้เลย</p>
+    <div id="msg" role="alert"></div>
+    <div class="keys" id="keys">hold space = ฝ้าขึ้นแบบไม่ต้องเป่า · c = clear กระจก · s = save ภาพ · esc = กลับหน้าแรก</div>
+  </div>
+</div>
+
+<div id="hud" hidden>
+  <div id="hint" class="frosted"></div>
+  <div id="brushPill" class="frosted">
+    <label for="brush">brush</label>
+    <input id="brush" type="range" min="7" max="38" step="1" value="15">
+  </div>
+  <button id="puff" class="frosted" aria-label="กดค้างให้ฝ้าขึ้น" hidden>🫧</button>
+  <button id="shutter" class="frosted" aria-label="save ภาพนี้" title="save ภาพนี้ (s)"></button>
+</div>
+
+<div id="polaroid" hidden>
+  <img id="polImg" alt="Day 1">
+  <div class="pol-actions">
+    <button id="polSave" class="frosted">save รูปนี้ 💾</button>
+    <button id="polBack" class="frosted">เล่นต่อ ✨</button>
+  </div>
+</div>
+<div id="flash"></div>
+<div id="err" hidden></div>
+
+<script>
+'use strict';
+
+/* ======================================================================
+   fog — a fogged-up bathroom mirror.
+   Layers per frame:
+     1. camera, mirrored
+     2. fogCanvas (offscreen, never drawn directly): alpha = how much fog
+     3. frost: camera blurred+brightened+tinted, masked by fogCanvas
+        with 'destination-in'
+   Erasing = 'destination-out' on fogCanvas. Never paint white or camera back.
+
+   Secret "ask" mode: hold L for 1s (keyboard) or long-press the top-left
+   corner for 1s (touch/mouse). The mirror fogs over, a finger-written
+   question appears where the fog is, then two circles to wipe for the answer.
+   Optional: change the question via the URL hash (never sent to any server):
+     fog.html#q=เป็นแฟนกันมั้ย?
+   Use | in q for a line break.
+   ====================================================================== */
+
+const HANDS_VER = '0.4.1675469240';
+const FACE_VER  = '0.4.1646425229';
+const IS_TOUCH = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1;
+
+const FOG = {
+  initial: 0.55,            // fog opacity on load
+  blur: 18,                 // CSS px
+  brightness: 1.18,
+  tint: '242,238,231',
+  tintMix: 0.62,
+  blobs: 12,                // per breath puff, every other frame
+  blobBlur: 0.60,           // × blob radius
+  reach: 0.43,              // × short screen edge
+  blobAlpha: 0.36,
+  below: 0.15,              // centre sits this far (× reach) below the mouth
+  wide: 1.45,               // horizontal / vertical spread
+  faceEvery: 5,             // run face detection every Nth inference
+  faceEase: 0.4,
+};
+const BREATH = { trigger: 0.0025, full: 0.003, floorDown: 0.05, floorUp: 0.0008, keyIgnoreMs: 300 };
+const PEN = { down: 0.22, up: 0.38, ease1: 0.45, ease2: 0.22, star: 0.55, tremor: 0.0006, liftMs: 250, liftFrames: 2, jump: 0.3 };
+const WIPE = { scale: 1.6, step: 0.5, maxStamps: 40, jump: 0.3, alpha: 0.34, startFrames: 2 };
+const ASK_CFG = {
+  holdMs: 1000,             // secret trigger hold time
+  corner: 110,              // CSS px, top-left secret zone
+  autoFog: 0.006,           // per-frame fog wash while the question builds
+  breathAfterMs: 1200,      // breathing starts revealing after this
+  autoAfterMs: 3500,        // and it reveals itself slowly after this
+  revealBreath: 0.02,
+  revealAuto: 0.002,
+  answerAfterMs: 1500,      // pause on the full question before the circles
+  choose: 0.5,              // fraction of a circle wiped = chosen
+};
+
+const PARAMS = new URLSearchParams(location.hash.slice(1));
+const ASK = {
+  q: (PARAMS.get('q') || 'เป็นแฟนกันมั้ย?').split('|'),
+  yes: PARAMS.get('yes') || 'ตกลง 💗',
+  later: PARAMS.get('later') || 'ขอคิดก่อน 🙈',
+};
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const pad2 = (n) => String(n).padStart(2, '0');
+const FONT_STACK = '"Sukhumvit Set","Noto Sans Thai","Leelawadee UI",Thonburi,system-ui,-apple-system,sans-serif';
+const maskFont = (px, weight) => weight + ' ' + px + 'px ' + FONT_STACK;
+
+/* ---------- DOM ---------- */
+const view = document.getElementById('view');
+const vctx = view.getContext('2d');
+const video = document.getElementById('cam');
+const startEl = document.getElementById('start');
+const goBtn = document.getElementById('go');
+const msgEl = document.getElementById('msg');
+const keysEl = document.getElementById('keys');
+const hudEl = document.getElementById('hud');
+const hintEl = document.getElementById('hint');
+const brushEl = document.getElementById('brush');
+const puffEl = document.getElementById('puff');
+const shutterEl = document.getElementById('shutter');
+const polaroidEl = document.getElementById('polaroid');
+const polImg = document.getElementById('polImg');
+const polSave = document.getElementById('polSave');
+const polBack = document.getElementById('polBack');
+const flashEl = document.getElementById('flash');
+const errEl = document.getElementById('err');
+
+/* ---------- surface errors instead of dying silently ---------- */
+function showError(text) { errEl.textContent = text; errEl.hidden = false; }
+errEl.addEventListener('click', () => { errEl.hidden = true; });
+window.addEventListener('error', (e) => { showError('oops มีอะไรสะดุด: ' + e.message + (e.lineno ? '  (line ' + e.lineno + ')' : '')); });
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  showError('oops มีอะไรสะดุด: ' + (r && r.message ? r.message : String(r)));
+});
+
+/* ---------- offscreen canvases ---------- */
+const fogCanvas = document.createElement('canvas');
+const fctx = fogCanvas.getContext('2d');
+const frostCanvas = document.createElement('canvas');
+const frctx = frostCanvas.getContext('2d');
+const smallCanvas = document.createElement('canvas');   // frost is built small (it's blurred anyway) then scaled up
+const sctx = smallCanvas.getContext('2d');
+const qMask = document.createElement('canvas');         // finger-written question (alpha = clear)
+const qctx = qMask.getContext('2d');
+const aMask = document.createElement('canvas');         // answer circles + labels
+const actx = aMask.getContext('2d');
+const MASK_SCALE = 0.5;                                  // masks are soft-edged anyway; half-res saves a lot of iPad memory
+const FILTER_OK = typeof sctx.filter === 'string';
+const FROST_SCALE = FILTER_OK ? 0.25 : 0.06;            // without ctx.filter, heavy downscaling stands in for blur
+
+let dpr = 1, W = 0, H = 0;
+
+function dprNow() { return Math.min(window.devicePixelRatio || 1, 2); }
+
+function resize() {
+  dpr = dprNow();
+  const w = Math.max(1, Math.round(window.innerWidth * dpr));
+  const h = Math.max(1, Math.round(window.innerHeight * dpr));
+  if (w === W && h === H) return;
+  let old = null;
+  if (W && H) {
+    old = document.createElement('canvas');
+    old.width = W; old.height = H;
+    old.getContext('2d').drawImage(fogCanvas, 0, 0);
+  }
+  const sx = W ? w / W : 1, sy = H ? h / H : 1;
+  W = w; H = h;
+  view.width = W; view.height = H;
+  fogCanvas.width = W; fogCanvas.height = H;
+  frostCanvas.width = W; frostCanvas.height = H;
+  qMask.width = Math.max(1, Math.round(W * MASK_SCALE)); qMask.height = Math.max(1, Math.round(H * MASK_SCALE));
+  aMask.width = qMask.width; aMask.height = qMask.height;
+  smallCanvas.width = Math.max(1, Math.round(W * FROST_SCALE));
+  smallCanvas.height = Math.max(1, Math.round(H * FROST_SCALE));
+  if (old) fctx.drawImage(old, 0, 0, W, H); else resetFog();
+  fogCenter.x *= sx; fogCenter.y *= sy;
+  faceTarget.x *= sx; faceTarget.y *= sy;
+  if (ask.stage !== 'off') rebuildMasks();
+}
+window.addEventListener('resize', resize);
+
+/* ---------- camera → screen mapping (cover fit, mirrored) ---------- */
+function coverRect(cw, ch) {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const s = Math.max(cw / vw, ch / vh);
+  const dw = vw * s, dh = vh * s;
+  return { x: (cw - dw) / 2, y: (ch - dh) / 2, w: dw, h: dh };
+}
+// MediaPipe landmarks are normalised on the un-mirrored frame.
+function toScreen(p) {
+  const r = coverRect(W, H);
+  return { x: r.x + (1 - p.x) * r.w, y: r.y + p.y * r.h };
+}
+function drawMirrored(ctx, cw, ch, pad) {
+  const r = coverRect(cw, ch);
+  ctx.save();
+  ctx.translate(cw, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2);
+  ctx.restore();
+}
+
+/* ---------- fog storage ---------- */
+function resetFog() {
+  fctx.save();
+  fctx.globalCompositeOperation = 'source-over';
+  fctx.globalAlpha = 1;
+  fctx.clearRect(0, 0, W, H);
+  fctx.fillStyle = 'rgba(255,255,255,' + FOG.initial + ')';
+  fctx.fillRect(0, 0, W, H);
+  fctx.restore();
+}
+function fogWash(a) {
+  fctx.save();
+  fctx.globalCompositeOperation = 'source-over';
+  fctx.globalAlpha = 1;
+  fctx.fillStyle = 'rgba(255,255,255,' + a + ')';
+  fctx.fillRect(0, 0, W, H);
+  fctx.restore();
+}
+
+// One pre-blurred soft disc; scaling it keeps blur = 0.60 × radius at any size.
+const SPRITE_R = 64;
+const blobSprite = (() => {
+  const blur = SPRITE_R * FOG.blobBlur;
+  const half = Math.ceil(SPRITE_R + blur * 3);
+  const c = document.createElement('canvas');
+  c.width = c.height = half * 2;
+  const g = c.getContext('2d');
+  if (typeof g.filter === 'string') {
+    g.filter = 'blur(' + blur + 'px)';
+    g.fillStyle = '#fff';
+    g.beginPath(); g.arc(half, half, SPRITE_R, 0, TAU); g.fill();
+  } else {
+    const grad = g.createRadialGradient(half, half, 0, half, half, SPRITE_R + blur * 2);
+    grad.addColorStop(0, 'rgba(255,255,255,0.8)');
+    grad.addColorStop(0.45, 'rgba(255,255,255,0.6)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad; g.fillRect(0, 0, half * 2, half * 2);
+  }
+  return { canvas: c, half };
+})();
+
+const fogCenter = { x: 0, y: 0 };
+const faceTarget = { x: 0, y: 0 };
+let faces = [], faceSeen = -1e9;
+
+function breathe(strength) {
+  const reach = FOG.reach * Math.min(W, H);
+  const cx = fogCenter.x;
+  const cy = fogCenter.y + reach * FOG.below;            // breath falls
+  const sx = reach * 0.6, sy = sx / FOG.wide;            // and drifts sideways
+  fctx.save();
+  fctx.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < FOG.blobs; i++) {
+    const a = Math.random() * TAU, d = Math.sqrt(Math.random());
+    const x = cx + Math.cos(a) * d * sx;
+    const y = cy + Math.sin(a) * d * sy;
+    const r = reach * (0.18 + Math.random() * 0.22);
+    const s = blobSprite.half * (r / SPRITE_R);
+    fctx.globalAlpha = FOG.blobAlpha * strength;
+    fctx.drawImage(blobSprite.canvas, x - s, y - s, s * 2, s * 2);
+  }
+  fctx.restore();
+}
+
+/* ---------- drawing (finger in the air, or finger on the glass) ---------- */
+const strokes = { hand: { pts: [] }, touch: { pts: [] } };
+function brushRadius() { return Number(brushEl.value) * dpr; }
+function eraseStyle() {
+  fctx.globalCompositeOperation = 'destination-out';
+  fctx.globalAlpha = 1;
+  fctx.strokeStyle = '#000';
+  fctx.fillStyle = '#000';
+  fctx.lineCap = 'round';
+  fctx.lineJoin = 'round';
+  fctx.lineWidth = brushRadius() * 2;
+}
+function strokeStart(s, p) {
+  s.pts = [{ x: p.x, y: p.y }];
+  fctx.save(); eraseStyle();
+  fctx.beginPath(); fctx.arc(p.x, p.y, brushRadius(), 0, TAU); fctx.fill();
+  fctx.restore();
+}
+function strokeAdd(s, p) {
+  const pts = s.pts;
+  if (!pts.length) { strokeStart(s, p); return; }
+  const last = pts[pts.length - 1];
+  if (Math.hypot(p.x - last.x, p.y - last.y) < PEN.tremor * W) return;   // tremor
+  pts.push({ x: p.x, y: p.y });
+  const n = pts.length;
+  fctx.save(); eraseStyle(); fctx.beginPath();
+  if (n === 2) {
+    const m = mid(pts[0], pts[1]);
+    fctx.moveTo(pts[0].x, pts[0].y); fctx.lineTo(m.x, m.y);
+  } else {
+    const a = mid(pts[n - 3], pts[n - 2]), b = mid(pts[n - 2], pts[n - 1]);
+    fctx.moveTo(a.x, a.y);
+    fctx.quadraticCurveTo(pts[n - 2].x, pts[n - 2].y, b.x, b.y);   // curve through midpoints: no corners
+  }
+  fctx.stroke(); fctx.restore();
+  if (pts.length > 3) pts.splice(0, pts.length - 3);
+}
+function strokeEnd(s) {
+  const pts = s.pts;
+  if (pts.length >= 2) {
+    const n = pts.length, a = mid(pts[n - 2], pts[n - 1]);
+    fctx.save(); eraseStyle(); fctx.beginPath();
+    fctx.moveTo(a.x, a.y); fctx.lineTo(pts[n - 1].x, pts[n - 1].y); fctx.stroke();
+    fctx.restore();
+  }
+  s.pts = [];
+}
+
+/* ---------- sleeve wipe (fist) ---------- */
+const wipe = { active: false, last: null, carry: 0 };
+function stampAt(x, y, r) {
+  const g = fctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, 'rgba(0,0,0,' + WIPE.alpha + ')');
+  g.addColorStop(0.5, 'rgba(0,0,0,' + (WIPE.alpha * 0.8) + ')');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  fctx.fillStyle = g;
+  fctx.fillRect(x - r, y - r, r * 2, r * 2);
+}
+// Erase per distance travelled, never per frame.
+function wipeTo(p, r) {
+  fctx.save();
+  fctx.globalCompositeOperation = 'destination-out';
+  fctx.globalAlpha = 1;
+  const last = wipe.last;
+  if (!last || dist(p, last) > WIPE.jump * W) {
+    // first contact, or tracking dropped and re-acquired: one stamp, no streak
+    stampAt(p.x, p.y, r);
+    wipe.carry = 0;
+  } else {
+    const dx = p.x - last.x, dy = p.y - last.y, d = Math.hypot(dx, dy);
+    const step = Math.max(1, r * WIPE.step);
+    let t = step - wipe.carry, n = 0;
+    while (t <= d && n < WIPE.maxStamps) {
+      stampAt(last.x + dx * (t / d), last.y + dy * (t / d), r);
+      t += step; n++;
+    }
+    wipe.carry = n >= WIPE.maxStamps ? 0 : d - (t - step);
+  }
+  wipe.last = { x: p.x, y: p.y };
+  fctx.restore();
+}
+function fistEnd() {
+  hand.fistFrames = 0;
+  wipe.active = false;
+  wipe.last = null;
+  wipe.carry = 0;
+}
+
+/* ---------- hand state ---------- */
+const hand = {
+  raw: null, eased: null, brush: null, star: null,
+  lastSeen: -1e9, penDown: false, releaseFrames: 0, lastHeld: 0, fistFrames: 0,
+};
+function penStart(now) {
+  hand.penDown = true;
+  hand.releaseFrames = 0;
+  hand.lastHeld = now;
+  strokeStart(strokes.hand, hand.brush);
+}
+function penEnd() {
+  hand.penDown = false;
+  hand.releaseFrames = 0;
+  strokeEnd(strokes.hand);
+}
+function releaseTick(now) {
+  hand.releaseFrames++;
+  if (hand.releaseFrames >= PEN.liftFrames && now - hand.lastHeld >= PEN.liftMs) penEnd();
+}
+
+function onHands(res) {
+  const now = performance.now();
+  const lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
+  if (!lm) {
+    // Hand vanished: don't lift yet, just count released frames.
+    fistEnd();
+    if (hand.penDown) releaseTick(now);
+    return;
+  }
+  const P = (i) => toScreen(lm[i]);
+  const wrist = P(0), thumbTip = P(4), idxMcp = P(5), idxTip = P(8), midMcp = P(9), pinkyMcp = P(17);
+  const size = Math.max(1, dist(wrist, midMcp));
+
+  // Pinch relative to hand size, so it's the same near or far.
+  const pinch = dist(thumbTip, idxTip) / size;
+
+  // Fist: every fingertip closer to the wrist than that finger's middle joint.
+  const curled = [[8, 6], [12, 10], [16, 14], [20, 18]].every(([t, j]) => dist(P(t), wrist) < dist(P(j), wrist));
+  // Index extended: tip reaches past its knuckle. In a fist it never does.
+  const indexOut = dist(idxTip, wrist) > dist(idxMcp, wrist);
+  const isFist = curled && !indexOut;
+
+  const pt = mid(thumbTip, idxTip);
+  if (!hand.eased) {
+    hand.eased = { x: pt.x, y: pt.y };
+    hand.brush = { x: pt.x, y: pt.y };
+    hand.star = { x: pt.x, y: pt.y };
+  } else if (hand.raw && dist(pt, hand.raw) > PEN.jump * W) {
+    // tracking re-acquired somewhere else: snap, don't draw a line across the mirror
+    hand.eased = { x: pt.x, y: pt.y };
+    hand.brush = { x: pt.x, y: pt.y };
+    hand.star = { x: pt.x, y: pt.y };
+    if (hand.penDown) { strokeEnd(strokes.hand); strokeStart(strokes.hand, pt); }
+  }
+  hand.raw = pt;
+  hand.lastSeen = now;
+
+  if (!drawAllowed()) {           // while the question builds, hands can't touch the glass
+    if (hand.penDown) penEnd();
+    fistEnd();
+    return;
+  }
+
+  if (hand.penDown) {
+    if (pinch > PEN.up) releaseTick(now);
+    else { hand.releaseFrames = 0; hand.lastHeld = now; }   // below up-threshold: hold
+  } else if (pinch < PEN.down && indexOut) {                 // index check only at pen-down
+    penStart(now);
+  }
+
+  if (!hand.penDown && isFist) {
+    hand.fistFrames++;
+    if (hand.fistFrames >= WIPE.startFrames) {
+      wipe.active = true;
+      const ids = [0, 5, 9, 13, 17];
+      const c = ids.map(P).reduce((a, b) => ({ x: a.x + b.x / ids.length, y: a.y + b.y / ids.length }), { x: 0, y: 0 });
+      // side-on fists flatten knuckle width, so take the larger measure
+      const handWidth = Math.max(dist(idxMcp, pinkyMcp), size);
+      wipeTo(c, handWidth * WIPE.scale);
+    }
+  } else {
+    fistEnd();
+  }
+}
+
+function onFace(res) {
+  const ds = res.detections || [];
+  const r = coverRect(W, H);
+  faces = [];
+  for (const d of ds) {
+    if (!d.boundingBox) continue;
+    const b = d.boundingBox;
+    const c = toScreen({ x: b.xCenter, y: b.yCenter });
+    faces.push({ x: c.x, y: c.y, w: b.width * r.w, h: b.height * r.h });
+  }
+  if (!ds.length) return;
+  faceSeen = performance.now();
+  const d = ds[0];
+  let m;
+  if (d.landmarks && d.landmarks[3]) m = d.landmarks[3];           // mouth centre keypoint
+  else if (d.boundingBox) m = { x: d.boundingBox.xCenter, y: d.boundingBox.yCenter + d.boundingBox.height * 0.3 };
+  else return;
+  const s = toScreen(m);
+  faceTarget.x = s.x; faceTarget.y = s.y;
+}
+
+/* ---------- MediaPipe (fed by hand, no camera_utils) ---------- */
+let hands = null, face = null, modelsReady = false, inferBusy = false, inferCount = 0;
+
+function makeModels() {
+  hands = new Hands({ locateFile: (f) => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@' + HANDS_VER + '/' + f });
+  hands.setOptions({ maxNumHands: 1, modelComplexity: IS_TOUCH ? 0 : 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5, selfieMode: false });
+  hands.onResults(onHands);
+  face = new FaceDetection({ locateFile: (f) => 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@' + FACE_VER + '/' + f });
+  face.setOptions({ model: 'short', minDetectionConfidence: 0.5, selfieMode: false });
+  face.onResults(onFace);
+}
+
+function pump() {
+  if (inferBusy || !modelsReady || video.readyState < 2) return;
+  inferBusy = true;
+  const every = ask.stage === 'yes' ? 2 : FOG.faceEvery;   // track both faces closely for the photo
+  const doFace = (inferCount++ % every) === 0;
+  const job = (async () => {
+    if (doFace) await face.send({ image: video });
+    await hands.send({ image: video });
+  })();
+  // .finally re-rejects, so a failure still surfaces as an unhandled rejection
+  job.finally(() => { inferBusy = false; });
+}
+
+/* ---------- breath (microphone) ---------- */
+let audioCtx = null, analyser = null, audioBuf = null, noiseFloor = null;
+let lastKey = -1e9, spaceHeld = false, puffHeld = false;
+
+function breathStrength(now) {
+  let s = (spaceHeld || puffHeld) ? 1 : 0;
+  if (analyser) {
+    analyser.getFloatTimeDomainData(audioBuf);
+    let sum = 0;
+    for (let i = 0; i < audioBuf.length; i++) sum += audioBuf[i] * audioBuf[i];
+    const level = Math.sqrt(sum / audioBuf.length);
+    if (noiseFloor === null) noiseFloor = level;
+    if (now - lastKey >= BREATH.keyIgnoreMs && level > noiseFloor + BREATH.trigger) {
+      s = Math.max(s, clamp((level - noiseFloor - BREATH.trigger) / (BREATH.full - BREATH.trigger), 0, 1));
+    }
+    // Floor drops fast, rises slowly. Never a hard minimum.
+    if (level < noiseFloor) noiseFloor += (level - noiseFloor) * BREATH.floorDown;
+    else noiseFloor += (level - noiseFloor) * BREATH.floorUp;
+  }
+  return s;
+}
+
+/* ======================================================================
+   The ask
+   ====================================================================== */
+// stages: off → reveal → answer → yes → done        (or answer → later → off)
+const ask = { stage: 'off', t0: 0, lastCheck: 0, q: 0, a: 0, doneAt: 0, lines: ASK.q, choices: [], base: {}, shot: false, polURL: '', polName: '', heartAcc: 0, cleared: false };
+const floaters = [];
+
+function drawAllowed() { return ask.stage === 'off' || ask.stage === 'answer'; }
+function breathAllowed() { return ask.stage === 'off' || ask.stage === 'reveal' || ask.stage === 'later'; }
+
+function heartPath(ctx, x, y, s) {
+  ctx.moveTo(x, y + s * 0.9);
+  ctx.bezierCurveTo(x - s * 1.4, y + s * 0.1, x - s * 0.9, y - s * 0.9, x, y - s * 0.35);
+  ctx.bezierCurveTo(x + s * 0.9, y - s * 0.9, x + s * 1.4, y + s * 0.1, x, y + s * 0.9);
+  ctx.closePath();
+}
+
+// Writes text as if with a fingertip on glass: rounded strokes, soft edges.
+function fingerWrite(ctx, lines, cx, cy, maxW, maxSize, weight) {
+  ctx.save();
+  ctx.font = maskFont(100, weight);
+  let widest = 1;
+  for (const l of lines) widest = Math.max(widest, ctx.measureText(l).width);
+  const size = Math.max(10, Math.min(maxSize, (maxW / widest) * 100));
+  ctx.font = maskFont(size, weight);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#fff';
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = size * 0.06;
+  const lh = size * 1.3, top = cy - (lines.length - 1) * lh / 2;
+  let w = 0;
+  lines.forEach((l, i) => {
+    const y = top + i * lh;
+    ctx.fillText(l, cx, y);
+    ctx.strokeText(l, cx, y);
+    w = Math.max(w, ctx.measureText(l).width);
+  });
+  ctx.restore();
+  return { size, width: w, bottom: top + (lines.length - 1) * lh + size * 0.45 };
+}
+// Water running down from the bottom of the letters, like real mirror writing.
+function drips(ctx, cx, bottom, width, size, count) {
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (let i = 0; i < count; i++) {
+    const x = cx + (Math.random() - 0.5) * width * 0.9;
+    const y0 = bottom - size * 0.2;
+    const len = size * (0.25 + Math.random() * 0.65);
+    const w = size * (0.035 + Math.random() * 0.03);
+    const g = ctx.createLinearGradient(x, y0, x, y0 + len);
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.85, 'rgba(255,255,255,0.7)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = g;
+    ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x + (Math.random() - 0.5) * w, y0 + len); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath(); ctx.arc(x, y0 + len * 0.9, w * 0.75, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+function softEdges(ctx) { if (FILTER_OK) ctx.filter = 'blur(' + Math.max(0.6, 0.9 * dpr) + 'px)'; }
+
+function buildQuestionMask() {
+  qctx.clearRect(0, 0, qMask.width, qMask.height);
+  qctx.save();
+  qctx.scale(MASK_SCALE, MASK_SCALE);
+  softEdges(qctx);
+  const landscape = W > H;
+  const cy = H * (landscape ? 0.34 : 0.33);
+  const m = fingerWrite(qctx, ask.lines, W / 2, cy, W * 0.84, Math.min(W, H) * (landscape ? 0.13 : 0.17), 600);
+  drips(qctx, W / 2, m.bottom, m.width, m.size, 7);
+  qctx.restore();
+}
+
+function layoutChoices() {
+  const landscape = W > H;
+  const r = Math.min(W, H) * (landscape ? 0.11 : 0.15);
+  const y = H * (landscape ? 0.71 : 0.69);
+  ask.choices = [
+    { key: 'yes', label: ASK.yes, x: W * 0.29, y, r },
+    { key: 'later', label: ASK.later, x: W * 0.71, y, r },
+  ];
+}
+function wobblyCircle(ctx, c) {
+  const ph = Math.random() * TAU;
+  ctx.beginPath();
+  for (let i = 0; i <= 72; i++) {               // a little past one loop, like a hand-drawn ring
+    const a = -Math.PI / 2 + (i / 64) * TAU;
+    const rr = c.r * (1 + 0.018 * Math.sin(2 * a + ph) + 0.008 * Math.sin(5 * a));
+    const x = c.x + Math.cos(a) * rr, y = c.y + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+function buildAnswerMask() {
+  layoutChoices();
+  actx.clearRect(0, 0, aMask.width, aMask.height);
+  actx.save();
+  actx.scale(MASK_SCALE, MASK_SCALE);
+  softEdges(actx);
+  actx.strokeStyle = '#fff';
+  actx.lineCap = 'round';
+  actx.lineJoin = 'round';
+  for (const c of ask.choices) {
+    actx.lineWidth = Math.max(3 * dpr, c.r * 0.07);
+    wobblyCircle(actx, c);
+    fingerWrite(actx, [c.label], c.x, c.y + c.r * 1.42, W * 0.4, c.r * 0.36, 600);
+  }
+  actx.restore();
+}
+function rebuildMasks() {
+  if (ask.stage === 'reveal' || ask.stage === 'answer' || ask.stage === 'later') buildQuestionMask();
+  if (ask.stage === 'answer') buildAnswerMask();
+}
+
+// Average fog left inside a circle (0..1). Read rarely; getImageData is a GPU readback.
+const SAMP = 32;
+const sampCanvas = document.createElement('canvas');
+sampCanvas.width = sampCanvas.height = SAMP;
+const sampCtx = sampCanvas.getContext('2d', { willReadFrequently: true });
+function fogIn(c) {
+  sampCtx.clearRect(0, 0, SAMP, SAMP);
+  sampCtx.drawImage(fogCanvas, c.x - c.r, c.y - c.r, c.r * 2, c.r * 2, 0, 0, SAMP, SAMP);
+  const d = sampCtx.getImageData(0, 0, SAMP, SAMP).data;
+  const half = SAMP / 2, r2 = half * half * 0.81;
+  let sum = 0, n = 0;
+  for (let y = 0; y < SAMP; y++) {
+    for (let x = 0; x < SAMP; x++) {
+      const dx = x + 0.5 - half, dy = y + 0.5 - half;
+      if (dx * dx + dy * dy > r2) continue;
+      sum += d[(y * SAMP + x) * 4 + 3];
+      n++;
+    }
+  }
+  return n ? sum / n / 255 : 0;
+}
+
+function liftEverything() {
+  if (hand.penDown) penEnd();
+  fistEnd();
+  if (touchId !== null) { strokeEnd(strokes.touch); touchId = null; }
+}
+
+function startAsk(now) {
+  liftEverything();
+  ask.stage = 'reveal';
+  ask.t0 = now;
+  ask.q = 0; ask.a = 0; ask.doneAt = 0;
+  ask.lines = ASK.q;
+  ask.shot = false;
+  buildQuestionMask();
+  hintEl.classList.add('gone');
+}
+function endAsk() {
+  ask.stage = 'off';
+  ask.q = 0; ask.a = 0;
+  floaters.length = 0;
+  polaroidEl.hidden = true;
+  qctx.clearRect(0, 0, qMask.width, qMask.height);
+  actx.clearRect(0, 0, aMask.width, aMask.height);
+  hintEl.classList.add('gone');
+}
+function secretToggle() {
+  if (!running) return;
+  if (navigator.vibrate) navigator.vibrate(12);
+  if (ask.stage === 'off') startAsk(performance.now());
+  else endAsk();
+}
+function enterAnswer(now) {
+  buildAnswerMask();
+  ask.base = {};
+  for (const c of ask.choices) ask.base[c.key] = Math.max(0.05, fogIn(c));
+  ask.stage = 'answer';
+  ask.t0 = now;
+  ask.a = 0;
+  setHint('ปาดวงที่ใช่ได้เลย 👆', 0);
+}
+function choose(key, now) {
+  liftEverything();
+  hintEl.classList.add('gone');
+  ask.t0 = now;
+  if (key === 'yes') {
+    ask.stage = 'yes';
+    ask.shot = false;
+    ask.cleared = false;
+    ask.heartAcc = 0;
+    if (navigator.vibrate) navigator.vibrate([30, 60, 30]);
+  } else {
+    ask.stage = 'later';
+    ask.lines = ['ไม่เป็นไรน้า 🤍', 'รอได้เสมอนะ'];
+    ask.q = 0;
+    buildQuestionMask();
+  }
+}
+
+function heartWipe(p) {
+  const e = p * p * (3 - 2 * p);
+  const s = Math.max(W, H) * 1.5 * e + 10 * dpr;
+  fctx.save();
+  fctx.globalCompositeOperation = 'destination-out';
+  fctx.fillStyle = '#000';
+  fctx.globalAlpha = 1;
+  fctx.beginPath(); heartPath(fctx, W / 2, H * 0.5, s); fctx.fill();
+  fctx.globalAlpha = 0.35;
+  fctx.beginPath(); heartPath(fctx, W / 2, H * 0.5, s * 1.08); fctx.fill();
+  fctx.restore();
+}
+
+function spawnFloaters(rate) {
+  ask.heartAcc += rate;
+  while (ask.heartAcc >= 1) {
+    ask.heartAcc -= 1;
+    floaters.push({
+      x: Math.random() * W, y: H + 30 * dpr,
+      vx: (Math.random() - 0.5) * 0.6 * dpr, vy: -(1.4 + Math.random() * 2.4) * dpr,
+      s: (6 + Math.random() * 13) * dpr, a: 0.95, ph: Math.random() * TAU,
+      pink: Math.random() < 0.6,
+    });
+  }
+}
+function drawFloaters(ctx, now, dt) {
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.x += (f.vx + Math.sin(now / 400 + f.ph) * 0.4 * dpr) * dt;
+    f.y += f.vy * dt;
+    f.a -= 0.0035 * dt;
+    if (f.y < -40 * dpr || f.a <= 0) { floaters.splice(i, 1); continue; }
+    ctx.save();
+    ctx.globalAlpha = f.a * 0.35;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); heartPath(ctx, f.x, f.y, f.s * 1.35); ctx.fill();   // soft halo
+    ctx.globalAlpha = f.a;
+    ctx.fillStyle = f.pink ? '#ffb3cb' : '#fff4f7';
+    ctx.beginPath(); heartPath(ctx, f.x, f.y, f.s); ctx.fill();
+    ctx.restore();
+  }
+}
+function drawFaceHearts(ctx, now) {
+  for (const f of faces) {
+    const s = Math.max(f.w, f.h) * 0.62 * (1 + 0.04 * Math.sin(now / 180));
+    ctx.save();
+    ctx.lineWidth = 3.5 * dpr;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.shadowColor = 'rgba(255,120,170,0.95)';
+    ctx.shadowBlur = 18 * dpr;
+    ctx.beginPath(); heartPath(ctx, f.x, f.y + f.h * 0.05, s); ctx.stroke();
+    ctx.restore();
+  }
+}
+function drawCountdown(ctx, el) {
+  const start = 2600;
+  if (el < start || el >= start + 3000) return;
+  const k = Math.floor((el - start) / 1000);
+  const frac = ((el - start) % 1000) / 1000;
+  const size = Math.min(W, H) * 0.26 * (1.25 - 0.25 * (1 - Math.pow(1 - frac, 3)));
+  ctx.save();
+  ctx.globalAlpha = 1 - frac * 0.75;
+  ctx.font = maskFont(Math.round(size), 700);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = 'rgba(255,120,170,0.9)';
+  ctx.shadowBlur = 30 * dpr;
+  ctx.fillText(String(3 - k), W / 2, H / 2);
+  ctx.restore();
+}
+
+// Ask timing runs on real time (dt = frames at 60fps), so slow phones get the same pacing.
+function updateAsk(now, strength, dt) {
+  const el = now - ask.t0;
+  const wash = (a) => fogWash(1 - Math.pow(1 - a, dt));
+  switch (ask.stage) {
+    case 'reveal': {
+      if (el < 9000) wash(ASK_CFG.autoFog);                       // steam rolls in by itself
+      if (el > ASK_CFG.breathAfterMs) ask.q += strength * ASK_CFG.revealBreath * dt;
+      if (el > ASK_CFG.autoAfterMs) ask.q += ASK_CFG.revealAuto * dt;    // never stalls if they don't breathe
+      ask.q = Math.min(1, ask.q);
+      if (ask.q >= 1 && !ask.doneAt) ask.doneAt = now;
+      if (ask.doneAt && now - ask.doneAt > ASK_CFG.answerAfterMs) enterAnswer(now);
+      break;
+    }
+    case 'answer': {
+      ask.a = Math.min(1, ask.a + 0.03 * dt);
+      if (ask.a > 0.6 && now - ask.lastCheck > 100) {
+        ask.lastCheck = now;
+        for (const c of ask.choices) {
+          if (1 - fogIn(c) / ask.base[c.key] >= ASK_CFG.choose) { choose(c.key, now); break; }
+        }
+      }
+      break;
+    }
+    case 'yes': {
+      ask.q = Math.max(0, ask.q - 0.04 * dt);
+      ask.a = Math.max(0, ask.a - 0.04 * dt);
+      if (el < 1700) heartWipe(el / 1700);
+      else if (!ask.cleared) { ask.cleared = true; fctx.clearRect(0, 0, W, H); }
+      if (el > 200 && el < 3200) spawnFloaters((IS_TOUCH ? 0.5 : 0.8) * dt);
+      if (el > 5600 && !ask.shot) { ask.shot = true; takePolaroid(); }
+      break;
+    }
+    case 'later': {
+      ask.a = Math.max(0, ask.a - 0.04 * dt);
+      if (el < 1500) wash(0.012);
+      if (el > 800 && el < 6000) ask.q = Math.min(1, ask.q + 0.02 * dt);
+      if (el >= 6000) ask.q = Math.max(0, ask.q - 0.02 * dt);
+      if (el > 6000 && ask.q <= 0) endAsk();
+      break;
+    }
+  }
+}
+
+function polaroidCanvas(now) {
+  const comp = document.createElement('canvas');
+  comp.width = W; comp.height = H;
+  const g = comp.getContext('2d');
+  drawMirrored(g, W, H, 0);
+  g.drawImage(frostCanvas, 0, 0);
+  if (now - faceSeen < 1200) drawFaceHearts(g, now);
+
+  // square crop, centred on the faces when we have them
+  const side = Math.min(W, H);
+  let cx = W / 2, cy = H / 2;
+  if (faces.length && now - faceSeen < 1200) {
+    cx = faces.reduce((a, f) => a + f.x, 0) / faces.length;
+    cy = faces.reduce((a, f) => a + f.y, 0) / faces.length;
+  }
+  const sx = clamp(cx - side / 2, 0, W - side), sy = clamp(cy - side / 2, 0, H - side);
+
+  const PW = 1080, PH = 1300, M = 60, PHOTO = 960;
+  const out = document.createElement('canvas');
+  out.width = PW; out.height = PH;
+  const o = out.getContext('2d');
+  o.fillStyle = '#fbf8f3';
+  o.fillRect(0, 0, PW, PH);
+  o.drawImage(comp, sx, sy, side, side, M, M, PHOTO, PHOTO);
+  o.strokeStyle = 'rgba(0,0,0,0.06)';
+  o.lineWidth = 2;
+  o.strokeRect(M, M, PHOTO, PHOTO);
+
+  o.textAlign = 'center';
+  o.textBaseline = 'middle';
+  o.fillStyle = '#3a2f33';
+  o.font = maskFont(92, 700);
+  o.fillText('Day 1 💗', PW / 2, M + PHOTO + 118);
+  const d = new Date();
+  const date = pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '.' + d.getFullYear();
+  o.font = maskFont(40, 400);
+  o.fillStyle = 'rgba(58,47,51,0.62)';
+  o.fillText(date, PW / 2, M + PHOTO + 212);
+  return { canvas: out, name: 'day1-' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '.png' };
+}
+function takePolaroid() {
+  const p = polaroidCanvas(performance.now());
+  ask.polURL = p.canvas.toDataURL('image/png');
+  ask.polName = p.name;
+  flash();
+  polImg.src = ask.polURL;
+  polaroidEl.hidden = false;
+  ask.stage = 'done';
+}
+
+/* ---------- render ---------- */
+let running = false, rafId = 0, frameNo = 0, lastNow = 0, stream = null, hintTimer = 0;
+
+function drawStar(now) {
+  if (!hand.star || now - hand.lastSeen > PEN.liftMs) return;
+  const r = (hand.penDown ? 7 : 5) * dpr;
+  vctx.save();
+  vctx.translate(hand.star.x, hand.star.y);
+  vctx.globalAlpha = hand.penDown ? 1 : 0.55;
+  vctx.shadowColor = 'rgba(255,255,255,0.95)';
+  vctx.shadowBlur = (hand.penDown ? 16 : 10) * dpr;
+  vctx.fillStyle = '#fff';
+  vctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4 - Math.PI / 2;
+    const rr = i % 2 ? r * 0.3 : r * 1.5;
+    if (i === 0) vctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    else vctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  vctx.closePath();
+  vctx.fill();
+  vctx.restore();
+}
+
+function render(now, dt) {
+  // frost, built small
+  const sw = smallCanvas.width, sh = smallCanvas.height;
+  const blurPx = FOG.blur * dpr * FROST_SCALE;
+  sctx.save();
+  sctx.globalCompositeOperation = 'source-over';
+  sctx.clearRect(0, 0, sw, sh);
+  if (FILTER_OK) sctx.filter = 'blur(' + blurPx + 'px) brightness(' + FOG.brightness + ')';
+  drawMirrored(sctx, sw, sh, blurPx * 2);       // overscan so blurred edges stay opaque
+  if (FILTER_OK) sctx.filter = 'none';
+  sctx.fillStyle = 'rgba(' + FOG.tint + ',' + FOG.tintMix + ')';
+  sctx.fillRect(0, 0, sw, sh);
+  sctx.restore();
+
+  frctx.globalCompositeOperation = 'source-over';
+  frctx.globalAlpha = 1;
+  frctx.clearRect(0, 0, W, H);
+  frctx.imageSmoothingEnabled = true;
+  frctx.imageSmoothingQuality = 'high';
+  frctx.drawImage(smallCanvas, 0, 0, W, H);
+  frctx.globalCompositeOperation = 'destination-in';
+  frctx.drawImage(fogCanvas, 0, 0);
+  // the finger-written question: where it's written, fog can't settle
+  frctx.globalCompositeOperation = 'destination-out';
+  if (ask.q > 0) { frctx.globalAlpha = ask.q; frctx.drawImage(qMask, 0, 0, W, H); }
+  if (ask.a > 0) { frctx.globalAlpha = ask.a; frctx.drawImage(aMask, 0, 0, W, H); }
+  frctx.globalAlpha = 1;
+  frctx.globalCompositeOperation = 'source-over';
+
+  vctx.globalCompositeOperation = 'source-over';
+  vctx.clearRect(0, 0, W, H);
+  drawMirrored(vctx, W, H, 0);
+  vctx.drawImage(frostCanvas, 0, 0);
+  if (ask.stage === 'yes') {
+    const el = now - ask.t0;
+    if (el > 1500 && now - faceSeen < 1200) drawFaceHearts(vctx, now);
+    drawCountdown(vctx, el);
+  }
+  if (floaters.length) drawFloaters(vctx, now, dt);
+  if (drawAllowed()) drawStar(now);
+}
+
+function frame(now) {
+  if (!running) return;
+  rafId = requestAnimationFrame(frame);
+  resize();
+  pump();
+  if (video.readyState < 2) return;
+
+  const strength = breathStrength(now);
+
+  fogCenter.x += (faceTarget.x - fogCenter.x) * FOG.faceEase;
+  fogCenter.y += (faceTarget.y - fogCenter.y) * FOG.faceEase;
+
+  if (hand.raw) {
+    hand.eased.x += (hand.raw.x - hand.eased.x) * PEN.ease1;
+    hand.eased.y += (hand.raw.y - hand.eased.y) * PEN.ease1;
+    hand.brush.x += (hand.eased.x - hand.brush.x) * PEN.ease2;
+    hand.brush.y += (hand.eased.y - hand.brush.y) * PEN.ease2;
+    hand.star.x += (hand.raw.x - hand.star.x) * PEN.star;
+    hand.star.y += (hand.raw.y - hand.star.y) * PEN.star;
+  }
+  if (hand.penDown) strokeAdd(strokes.hand, hand.brush);
+
+  frameNo++;
+  const dt = lastNow ? clamp((now - lastNow) / (1000 / 60), 0, 4) : 1;
+  lastNow = now;
+  updateAsk(now, strength, dt);
+
+  const handBusy = hand.penDown || wipe.active || touchId !== null;   // don't re-fog what's being wiped
+  if (breathAllowed() && !handBusy && strength > 0 && frameNo % 2 === 0) breathe(strength);
+
+  render(now, dt);
+}
+
+/* ---------- hint ---------- */
+function setHint(text, ms) {
+  clearTimeout(hintTimer);
+  hintEl.textContent = text;
+  hintEl.classList.remove('gone');
+  if (ms) hintTimer = setTimeout(() => hintEl.classList.add('gone'), ms);
+}
+
+/* ---------- start / stop ---------- */
+const VIDEO = IS_TOUCH
+  ? { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+  : { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } };
+// Browser noise suppression deletes the sound of breathing. All three off.
+const AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+
+function setMsg(html) { msgEl.innerHTML = html; }
+
+function insecureMessage() {
+  if (location.protocol === 'file:') {
+    return 'oops เปิดแบบ double-click อยู่ browser เลย block กล้อง 🙈<br>ลองแบบนี้นะ: ในโฟลเดอร์นี้พิมพ์ <code>python3 -m http.server</code> แล้วเปิด <code>http://localhost:8000/fog.html</code>';
+  }
+  return 'กล้องทำงานได้แค่บน https หรือ localhost นะ ลองเปิดจาก secure link ดูน้า';
+}
+
+function cameraErrorMessage(e) {
+  const n = e && e.name;
+  if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') {
+    return 'camera ยังไม่ได้รับอนุญาต 🥲 ไปกด allow camera ใน site settings ของ browser แล้วกด start อีกทีนะ';
+  }
+  if (n === 'NotFoundError' || n === 'DevicesNotFoundError' || n === 'OverconstrainedError') return 'หา camera ไม่เจอเลย 👀 ลองเช็กว่าเครื่องนี้มีกล้องหรือเสียบไว้แล้วนะ';
+  if (n === 'NotReadableError' || n === 'TrackStartError') return 'camera ติดใช้งานกับ app อื่นอยู่ ปิด app นั้นก่อน แล้วกด start อีกทีนะ';
+  return 'เปิด camera ไม่ได้แฮะ: ' + (n || 'Error') + (e && e.message ? ' — ' + e.message : '');
+}
+
+function playHint(micOn) {
+  if (IS_TOUCH) {
+    return micOn
+      ? 'breathe ฟู่ๆ ใส่จอ 🫧 · ปาดจอหรือ pinch วาดรูป ✏️ · fist ปาดเช็ด 🧽'
+      : 'mic ปิดอยู่ กด 🫧 ค้างแทนการเป่านะ · ปาดจอวาดรูป ✏️ · fist ปาดเช็ด 🧽';
+  }
+  return micOn
+    ? 'breathe ฟู่ๆ ใส่กระจก 🫧 · pinch วาดรูป ✏️ · fist ปาดเช็ด 🧽'
+    : 'mic ปิดอยู่ hold space แทนการเป่านะ 🫧 · pinch วาดรูป ✏️ · fist ปาดเช็ด 🧽';
+}
+
+async function start() {
+  goBtn.disabled = true;
+  setMsg('');
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setMsg(insecureMessage());
+    goBtn.disabled = false;
+    return;
+  }
+  if (typeof Hands === 'undefined' || typeof FaceDetection === 'undefined') {
+    setMsg('load hand tracking ไม่ขึ้น 😵 ลองเช็กเน็ตแล้ว refresh หน้านี้อีกทีนะ');
+    goBtn.disabled = false;
+    return;
+  }
+  if (!hands) makeModels();
+
+  // created and resumed inside the tap so iOS lets it run
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx.resume();
+
+  let micOn = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: AUDIO });
+  } catch (e) {
+    micOn = false;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO });
+    } catch (e2) {
+      setMsg(cameraErrorMessage(e2));
+      audioCtx.close(); audioCtx = null;
+      goBtn.disabled = false;
+      return;
+    }
+  }
+
+  video.srcObject = stream;
+  await video.play();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  if (micOn && stream.getAudioTracks().length) {
+    const src = audioCtx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    audioBuf = new Float32Array(analyser.fftSize);
+    const mute = audioCtx.createGain();
+    mute.gain.value = 0;
+    src.connect(analyser);
+    analyser.connect(mute);
+    mute.connect(audioCtx.destination);   // keeps the graph pulled in every browser; silent
+  } else {
+    analyser = null;
+    micOn = false;
+  }
+  noiseFloor = null;
+
+  startEl.hidden = true;
+  hudEl.hidden = false;
+  puffEl.hidden = !(IS_TOUCH || !micOn);
+  W = 0; H = 0;
+  resize();
+  resetFog();
+  fogCenter.x = faceTarget.x = W / 2;
+  fogCenter.y = faceTarget.y = H * 0.6;
+
+  running = true;
+  rafId = requestAnimationFrame(frame);
+
+  if (!modelsReady) {
+    setHint('รอแป๊บนะ กำลัง load hand tracking… ⏳', 0);
+    await hands.initialize();
+    await face.initialize();
+    modelsReady = true;
+  }
+  if (ask.stage === 'off') setHint(playHint(micOn), 7000);
+}
+
+function stop() {
+  endAsk();
+  running = false;
+  cancelAnimationFrame(rafId);
+  liftEverything();
+  hand.raw = hand.eased = hand.brush = hand.star = null;
+  hand.lastSeen = -1e9;
+  spaceHeld = false; puffHeld = false;
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
+  if (audioCtx) audioCtx.close();
+  audioCtx = null; analyser = null;
+  hudEl.hidden = true;
+  startEl.hidden = false;
+  goBtn.disabled = false;
+  goBtn.focus();
+}
+
+/* ---------- save ---------- */
+function timestamp() {
+  const d = new Date();
+  return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+}
+function dataURLtoFile(url, name) {
+  const comma = url.indexOf(',');
+  const mime = url.slice(5, url.indexOf(';'));
+  const bin = atob(url.slice(comma + 1));
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new File([u8], name, { type: mime });
+}
+// Phones/iPads: share sheet (→ Save Image to Photos). Computers: plain download.
+function deliverImage(url, name) {
+  if (IS_TOUCH && navigator.canShare && navigator.share) {
+    const file = dataURLtoFile(url, name);
+    if (navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file] }).catch((e) => {
+        if (e && e.name === 'AbortError') return;      // user closed the share sheet
+        throw e;
+      });
+      return;
+    }
+  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+function flash() {
+  flashEl.classList.remove('on');
+  void flashEl.offsetWidth;
+  flashEl.classList.add('on');
+}
+function savePNG() {
+  if (!running) return;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  drawMirrored(g, W, H, 0);
+  g.drawImage(frostCanvas, 0, 0);
+  deliverImage(c.toDataURL('image/png'), 'fog-' + timestamp() + '.png');
+  flash();
+}
+
+/* ---------- input: buttons ---------- */
+goBtn.addEventListener('click', start);
+shutterEl.addEventListener('click', () => { savePNG(); shutterEl.blur(); });
+brushEl.addEventListener('change', () => brushEl.blur());
+polSave.addEventListener('click', () => { deliverImage(ask.polURL, ask.polName); });
+polBack.addEventListener('click', () => {
+  endAsk();
+  setHint('ยินดีด้วยน้า 💗 เล่นต่อได้เลย', 4000);
+});
+
+function puffOn(e) { e.preventDefault(); puffHeld = true; puffEl.classList.add('on'); }
+function puffOff() { puffHeld = false; puffEl.classList.remove('on'); }
+puffEl.addEventListener('pointerdown', puffOn);
+puffEl.addEventListener('pointerup', puffOff);
+puffEl.addEventListener('pointercancel', puffOff);
+puffEl.addEventListener('pointerleave', puffOff);
+puffEl.addEventListener('contextmenu', (e) => e.preventDefault());
+
+/* ---------- input: finger on the glass + secret corner ---------- */
+let touchId = null, cornerId = null, cornerTimer = 0;
+const toCanvas = (e) => ({ x: e.clientX * dpr, y: e.clientY * dpr });
+
+view.addEventListener('pointerdown', (e) => {
+  if (!running) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  if (e.clientX < ASK_CFG.corner && e.clientY < ASK_CFG.corner) {   // secret corner: hold, don't draw
+    cornerId = e.pointerId;
+    clearTimeout(cornerTimer);
+    cornerTimer = setTimeout(() => { cornerId = null; secretToggle(); }, ASK_CFG.holdMs);
+    return;
+  }
+  if (touchId !== null || !drawAllowed()) return;
+  touchId = e.pointerId;
+  view.setPointerCapture(e.pointerId);
+  strokeStart(strokes.touch, toCanvas(e));
+});
+view.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== touchId) return;
+  let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  if (!evs.length) evs = [e];
+  for (const ev of evs) strokeAdd(strokes.touch, toCanvas(ev));
+});
+function pointerEnd(e) {
+  if (e.pointerId === cornerId) { clearTimeout(cornerTimer); cornerId = null; }
+  if (e.pointerId === touchId) { strokeEnd(strokes.touch); touchId = null; }
+}
+view.addEventListener('pointerup', pointerEnd);
+view.addEventListener('pointercancel', pointerEnd);
+view.addEventListener('contextmenu', (e) => e.preventDefault());
+
+/* ---------- input: keyboard ---------- */
+let lTimer = 0;
+window.addEventListener('keydown', (e) => {
+  lastKey = performance.now();          // typing must not read as breath
+  if (!running) return;
+  if (e.code === 'Space') { e.preventDefault(); spaceHeld = true; return; }
+  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.code;
+  if (k === 'KeyL') { clearTimeout(lTimer); lTimer = setTimeout(secretToggle, ASK_CFG.holdMs); }
+  else if (k === 'KeyC') { if (ask.stage === 'off') resetFog(); }
+  else if (k === 'KeyS') { e.preventDefault(); savePNG(); }
+  else if (e.key === 'Escape') { if (ask.stage !== 'off') endAsk(); else stop(); }
+});
+window.addEventListener('keyup', (e) => {
+  lastKey = performance.now();
+  if (e.code === 'KeyL') clearTimeout(lTimer);
+  if (e.code === 'Space') { spaceHeld = false; if (running) e.preventDefault(); }
+});
+window.addEventListener('blur', () => { spaceHeld = false; puffOff(); clearTimeout(lTimer); });
+
+/* ---------- start screen tweaks ---------- */
+if (IS_TOUCH) keysEl.textContent = 'ปาดจอ = เช็ดฝ้า · กด 🫧 ค้าง = ฝ้าขึ้นแบบไม่ต้องเป่า · ปุ่มกลม = save ภาพ';
+if (!window.isSecureContext) setMsg(insecureMessage());
+</script>
+</body>
+</html>
